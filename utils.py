@@ -31,14 +31,8 @@ load_dotenv()
 def get_source_icon(source: str):
     """
     メッセージと一緒に表示するアイコンの種類を取得
-
-    Args:
-        source: 参照元のありか
-
-    Returns:
-        メッセージと一緒に表示するアイコンの種類
     """
-    if source and source.startswith("http"):
+    if source and str(source).startswith("http"):
         return ct.LINK_SOURCE_ICON
     return ct.DOC_SOURCE_ICON
 
@@ -46,12 +40,6 @@ def get_source_icon(source: str):
 def build_error_message(message: str) -> str:
     """
     エラーメッセージと管理者問い合わせテンプレートの連結
-
-    Args:
-        message: 画面上に表示するエラーメッセージ
-
-    Returns:
-        エラーメッセージと管理者問い合わせテンプレートの連結テキスト
     """
     return "\n".join([message, ct.COMMON_ERROR_MESSAGE])
 
@@ -60,11 +48,9 @@ def _ensure_openai_key():
     """
     OPENAI_API_KEY が無い場合に、わかりやすい例外を投げる
     """
-    # 1) 既に環境変数にあるならOK
     if os.environ.get("OPENAI_API_KEY"):
         return
 
-    # 2) Streamlit secrets から拾う（initialize側と二重でもOK）
     try:
         if "OPENAI_API_KEY" in st.secrets:
             os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
@@ -96,21 +82,34 @@ def _append_history(user_text: str, assistant_text: str):
     st.session_state.chat_history.append(AIMessage(content=assistant_text))
 
 
+def _normalize_llm_response(resp):
+    """
+    返り値の型ブレを吸収し、必ず
+    {"answer": str, "context": list} を返す
+    """
+    if isinstance(resp, dict):
+        answer = resp.get("answer")
+        if answer is None:
+            # 念のため別キーもフォールバック
+            answer = resp.get("result") or resp.get("output_text") or ""
+        context = resp.get("context") or []
+        return {"answer": answer, "context": context, **resp}
+
+    # AIMessage等
+    if hasattr(resp, "content"):
+        return {"answer": getattr(resp, "content") or "", "context": []}
+
+    # str等
+    return {"answer": str(resp), "context": []}
+
+
 def get_llm_response(chat_message: str):
     """
     LLMからの回答取得（RAG + 会話履歴）
-
-    Args:
-        chat_message: ユーザー入力値
-
-    Returns:
-        LLMからの回答（例: {"answer": str, "context": List[Document], ...}）
     """
     _ensure_openai_key()
     _ensure_chat_history()
 
-    # LLMのオブジェクト
-    # model_name は環境/バージョンによって警告が出るため model を使用
     llm = ChatOpenAI(model=ct.MODEL, temperature=ct.TEMPERATURE)
 
     # 会話履歴があっても「単体で意味が通る質問文」に変換するプロンプト
@@ -137,25 +136,18 @@ def get_llm_response(chat_message: str):
         ]
     )
 
-    # 履歴考慮Retriever
     history_aware_retriever = create_history_aware_retriever(
         llm, st.session_state.retriever, question_generator_prompt
     )
 
-    # 回答生成チェーン
     question_answer_chain = create_stuff_documents_chain(llm, question_answer_prompt)
 
-    # Retriever + Answer chain
     chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-    # 実行
-    llm_response = chain.invoke(
-        {"input": chat_message, "chat_history": st.session_state.chat_history}
-    )
+    raw = chain.invoke({"input": chat_message, "chat_history": st.session_state.chat_history})
+    llm_response = _normalize_llm_response(raw)
 
-    answer_text = llm_response.get("answer", "")
-
-    # 履歴に追加（✅ AIMessageで保持）
+    answer_text = llm_response.get("answer", "") or ""
     _append_history(chat_message, answer_text)
 
     return llm_response
