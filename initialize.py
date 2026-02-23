@@ -105,7 +105,7 @@ def initialize_retriever():
 
     # 🔥 常に再生成（TOP_K変更などを即反映させるため）
     if "retriever" in st.session_state:
-    return
+        return
 
     # RAGの参照先となるデータソースの読み込み
     docs_all = load_data_sources()
